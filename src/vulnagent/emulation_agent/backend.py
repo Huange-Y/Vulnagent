@@ -1,18 +1,24 @@
-"""Validation backends — pluggable firmware verification for vulnagent.
+"""Validation backends — 4 connection modes, auto-detected at init.
 
-Three backends, one Protocol:
-  EmulationAgentBackend — remote Emulation Agent on Ubuntu VM (auto-discover)
-  DirectHardwareBackend — real device (no rootfs upload needed)
-  StaticOnlyBackend — no backend, static analysis only
+SameMachine  — emu-agent as local subprocess (same host, no network needed)
+SameNetwork  — direct HTTP to emu-agent on another host (same LAN)
+SshTunnel    — SSH tunnel to emu-agent on remote VM (cross-network)
+StaticOnly   — no backend, static analysis only
+
+create_validation_backend() probes modes in priority order.
 """
 from __future__ import annotations
 
+import os
+import platform
 import socket
 import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+_IS_WINDOWS = platform.system() == "Windows"
 
 
 @dataclass(frozen=True)
@@ -27,8 +33,10 @@ class VerificationResult:
     verified: bool = False; backend: str = ""
     evidence: str = ""; error: str = ""
     probe_data: dict[str, Any] = field(default_factory=dict)
+
     @property
-    def status_label(self) -> str: return "VERIFIED" if self.verified else "STATIC_ONLY"
+    def status_label(self) -> str:
+        return "VERIFIED" if self.verified else "STATIC_ONLY"
 
 
 @dataclass
@@ -37,8 +45,10 @@ class ValidationReport:
     arch: str = "unknown"; endian: str = "unknown"
     services: list[VerificationResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
     @property
-    def verified_count(self) -> int: return sum(1 for s in self.services if s.verified)
+    def verified_count(self) -> int:
+        return sum(1 for s in self.services if s.verified)
 
 
 class FirmwareValidationBackend(Protocol):
@@ -49,160 +59,194 @@ class FirmwareValidationBackend(Protocol):
     def set_nvram_config(self, rootfs_id: str, config: dict[str, str]) -> None: ...
 
 
-# ── Emulation Agent ────────────────────────────────────────────────
+# ── SameMachine: local subprocess ─────────────────────────────────
 
 @dataclass
-class EmulationAgentBackend:
-    agent_host: str = "your-vm-ip"; agent_port: int = 9100
-    ssh_tunnel: bool = True
-    ssh_host: str = "your-vm-host"; ssh_port: int = 22
-    ssh_user: str = "your-user"; ssh_key: str = "~/.ssh/id_ed25519"
-    _client: Any = None; _tunnel: Any = None; _available: bool = False
+class SameMachineBackend:
+    """Run emu-agent as a local subprocess via uvicorn. Same host, zero network."""
+
+    agent_port: int = 9100
+    _proc: subprocess.Popen | None = None
+    _client: Any = None
 
     def is_available(self) -> bool:
-        if self._available: return True
-        from vulnagent.emulation_agent.client import EmulationAgentClient, start_ssh_tunnel
+        try:
+            import uvicorn  # noqa: F401
+        except ImportError:
+            return False
+        return True
 
-        # 1. Try direct LAN connection to Ubuntu VM
-        c = EmulationAgentClient(base_url=f"http://{self.agent_host}:{self.agent_port}")
-        if c.is_reachable:
-            self._client = c; self._available = True; return True
-
-        # 2. Try SSH tunnel via forwarded port 2222
-        if self.ssh_tunnel:
-            self._tunnel = start_ssh_tunnel(
-                remote_host=f"{self.ssh_user}@{self.ssh_host}",
-                remote_port=self.ssh_port, ssh_key=self.ssh_key)
-            if self._tunnel:
-                time.sleep(1.5)
-                c2 = EmulationAgentClient(base_url="http://127.0.0.1:9100")
-                if c2.is_reachable:
-                    self._client = c2; self._available = True; return True
-                self._tunnel.terminate(); self._tunnel = None
+    def _start_server(self) -> bool:
+        if self._proc is not None and self._proc.poll() is None:
+            return True
+        cmd = [
+            "python" if _IS_WINDOWS else "python3",
+            "-m", "uvicorn", "vulnagent.emulation_agent.server:app",
+            "--host", "127.0.0.1", "--port", str(self.agent_port),
+        ]
+        try:
+            self._proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(2)
+            from vulnagent.emulation_agent.client import EmulationAgentClient
+            self._client = EmulationAgentClient(base_url=f"http://127.0.0.1:{self.agent_port}")
+            if self._client.is_reachable:
+                return True
+        except Exception:
+            pass
         return False
 
-    def upload_rootfs(self, path: Path) -> str:
-        if not self._client: raise RuntimeError("unavailable")
-        return self._client.upload_rootfs(path)
+    def upload_rootfs(self, p: Path) -> str:
+        if self._client is None and not self._start_server():
+            raise RuntimeError("local emu-agent failed to start")
+        return self._client.upload_rootfs(p)
 
-    def set_nvram_config(self, rid: str, cfg: dict[str, str]) -> None:
+    def validate_services(self, rid, svcs):
+        if self._client is None and not self._start_server():
+            return []
+        return self._client.validate_services(rid, svcs)
+
+    def set_nvram_config(self, rid, cfg):
+        if self._client is None and not self._start_server():
+            return
+        self._client.set_nvram_config(rid, cfg)
+
+    def cleanup(self, rid):
         if self._client:
-            try: self._client.set_nvram_config(rid, cfg)
-            except Exception: pass
-
-    def validate_services(self, rid: str, svcs: list[ServiceToVerify]) -> list[VerificationResult]:
-        if not self._client: raise RuntimeError("unavailable")
-        from vulnagent.emulation_agent.client import ServiceSpec
-        results = []
-        for s in svcs:
-            r = VerificationResult(service_name=s.binary_name, port=s.port, backend="emu_agent")
-            try:
-                start = self._client.start_service(rid, ServiceSpec(
-                    binary_name=s.binary_name, binary_path=s.binary_path,
-                    args=s.launch_args, port=s.port))
-                if start.get("status") not in ("running","starting"):
-                    r.error = f"start:{start.get('status')}"; results.append(r); continue
-                p = self._client.probe(s.port, s.protocol)
-                r.probe_data = p
-                if p.get("reachable"):
-                    r.verified = True
-                    r.evidence = f"{s.protocol}:{s.port} reachable"
-                    if p.get("http_status"): r.evidence += f" HTTP:{p['http_status']}"
-                    if p.get("telnet_banner"): r.evidence += f" banner:{p['telnet_banner'][:20]}"
-                self._client.stop_service(start.get("service_id",""))
-            except Exception as e: r.error = str(e)[:120]
-            results.append(r)
-        return results
-
-    def cleanup(self, rid: str) -> None:
-        if self._tunnel:
-            try: self._tunnel.terminate()
+            try: self._client.delete_rootfs(rid)
             except Exception: pass
 
 
-# ── Direct Hardware ─────────────────────────────────────────────────
+# ── SameNetwork: direct HTTP ──────────────────────────────────────
 
 @dataclass
-class DirectHardwareBackend:
-    target_host: str = ""
+class SameNetworkBackend:
+    """Direct HTTP to emu-agent on another host in the same LAN."""
+
+    agent_host: str = ""; agent_port: int = 9100
+    _client: Any = None
 
     def is_available(self) -> bool:
-        if not self.target_host: return False
+        if not self.agent_host:
+            return False
         try:
             s = socket.socket(); s.settimeout(3)
-            s.connect((self.target_host, 80)); s.close(); return True
-        except Exception: return False
+            s.connect((self.agent_host, self.agent_port)); s.close()
+        except Exception:
+            return False
+        from vulnagent.emulation_agent.client import EmulationAgentClient
+        c = EmulationAgentClient(base_url=f"http://{self.agent_host}:{self.agent_port}")
+        if c.is_reachable:
+            self._client = c; return True
+        return False
 
-    def upload_rootfs(self, path: Path) -> str: return "direct_hardware"
-    def set_nvram_config(self, rid: str, cfg: dict[str, str]) -> None: pass
+    def _ensure(self):
+        if self._client is None:
+            raise RuntimeError(f"emu-agent not reachable at {self.agent_host}:{self.agent_port}")
+        return self._client
 
-    def validate_services(self, rid: str, svcs: list[ServiceToVerify]) -> list[VerificationResult]:
-        results = []
-        for s in svcs:
-            r = VerificationResult(service_name=s.binary_name, port=s.port, backend="direct_hw")
-            try:
-                sk = socket.socket(); sk.settimeout(3)
-                sk.connect((self.target_host, s.port)); sk.close()
-                r.verified = True
-                r.evidence = f"Connected to {self.target_host}:{s.port}"
-            except Exception as e: r.error = str(e)
-            results.append(r)
-        return results
-
-    def cleanup(self, rid: str) -> None: pass
+    def upload_rootfs(self, p): return self._ensure().upload_rootfs(p)
+    def validate_services(self, r, s): return self._ensure().validate_services(r, s)
+    def set_nvram_config(self, r, c): self._ensure().set_nvram_config(r, c)
+    def cleanup(self, r):
+        try: self._ensure().delete_rootfs(r)
+        except Exception: pass
 
 
-# ── Static Only ─────────────────────────────────────────────────────
+# ── SshTunnel: SSH forwarded port ─────────────────────────────────
+
+@dataclass
+class SshTunnelBackend:
+    """SSH tunnel to emu-agent on a remote VM (cross-network)."""
+
+    ssh_host: str = ""; ssh_port: int = 22
+    ssh_user: str = ""; ssh_key: str = ""
+    agent_port: int = 9100; local_forward_port: int = 9100
+    _tunnel: Any = None; _client: Any = None
+
+    def is_available(self) -> bool:
+        if not self.ssh_host or not self.ssh_user:
+            return False
+        from vulnagent.emulation_agent.client import EmulationAgentClient, start_ssh_tunnel
+        self._tunnel = start_ssh_tunnel(
+            remote_host=f"{self.ssh_user}@{self.ssh_host}",
+            remote_port=self.ssh_port, ssh_key=self.ssh_key,
+            local_port=self.local_forward_port, remote_local_port=self.agent_port,
+        )
+        if self._tunnel is None:
+            return False
+        time.sleep(2)
+        c = EmulationAgentClient(base_url=f"http://127.0.0.1:{self.local_forward_port}")
+        if c.is_reachable:
+            self._client = c; return True
+        self._tunnel.terminate(); self._tunnel = None
+        return False
+
+    def _ensure(self):
+        if self._client is None:
+            raise RuntimeError("SSH tunnel not established")
+        return self._client
+
+    def upload_rootfs(self, p): return self._ensure().upload_rootfs(p)
+    def validate_services(self, r, s): return self._ensure().validate_services(r, s)
+    def set_nvram_config(self, r, c): self._ensure().set_nvram_config(r, c)
+    def cleanup(self, r):
+        try: self._ensure().delete_rootfs(r)
+        except Exception: pass
+        if self._tunnel: self._tunnel.terminate()
+
+
+# ── StaticOnly ────────────────────────────────────────────────────
 
 class StaticOnlyBackend:
     def is_available(self) -> bool: return True
-    def upload_rootfs(self, path: Path) -> str: return "static"
-    def set_nvram_config(self, rid: str, cfg: dict[str, str]) -> None: pass
-    def validate_services(self, rid: str, svcs: list[ServiceToVerify]) -> list[VerificationResult]:
-        return [VerificationResult(service_name=s.binary_name, port=s.port, backend="static",
-            error="No network validation backend available") for s in svcs]
-    def cleanup(self, rid: str) -> None: pass
+    def upload_rootfs(self, p): return ""
+    def validate_services(self, r, s): return [VerificationResult(error="static-only mode")]
+    def set_nvram_config(self, r, c): pass
+    def cleanup(self, r): pass
 
 
-# ── Factory ─────────────────────────────────────────────────────────
+# ── Factory ───────────────────────────────────────────────────────
 
 def create_validation_backend(
     emulation_config: dict[str, Any] | None = None,
-    direct_target: str = "",
+    logger: Any = None,
 ) -> tuple[FirmwareValidationBackend, str]:
-    """Auto-select the best available validation backend.
+    """Auto-detect best backend. Priority: SameMachine → SameNetwork → SshTunnel → StaticOnly."""
+    cfg = dict(emulation_config or {})
+    enabled = cfg.get("enabled", True)
 
-    Returns (backend, mode_label) where mode_label is one of:
-      "emulation_agent" / "direct_hardware" / "static_only"
-    """
-    # Direct hardware mode: target looks like IP or URL
-    if direct_target:
-        host = direct_target
-        for prefix in ("http://","https://","tcp://","telnet://"):
-            if host.startswith(prefix): host = host[len(prefix):]
-        host = host.split("/")[0].split(":")[0]
-        if _looks_like_host(host):
-            be = DirectHardwareBackend(target_host=host)
-            return be, f"direct_hardware@{host}"
+    def _log(msg):
+        if logger: logger.info(msg)
 
-    # Emulation Agent mode: try auto-discovery
-    if emulation_config:
-        be = EmulationAgentBackend(
-            agent_host=emulation_config.get("agent_host","your-vm-ip"),
-            agent_port=int(emulation_config.get("agent_port",9100)),
-            ssh_tunnel=bool(emulation_config.get("ssh_tunnel",True)),
-            ssh_host=emulation_config.get("ssh_host","localhost"),
-            ssh_port=int(emulation_config.get("ssh_port",2222)),
-            ssh_user=emulation_config.get("ssh_user","art"),
-            ssh_key=emulation_config.get("ssh_key","~/.ssh/id_ed25519"),
+    if not enabled:
+        return StaticOnlyBackend(), "static_only (disabled)"
+
+    # 1. Same machine
+    local = SameMachineBackend(agent_port=int(cfg.get("agent_port", 9100)))
+    if local.is_available():
+        _log("backend: same-machine (local subprocess)")
+        return local, "same_machine"
+
+    # 2. Same network
+    host = str(cfg.get("agent_host", ""))
+    if host:
+        net = SameNetworkBackend(agent_host=host, agent_port=int(cfg.get("agent_port", 9100)))
+        if net.is_available():
+            _log(f"backend: same-network ({host})")
+            return net, "same_network"
+
+    # 3. SSH tunnel
+    sh = str(cfg.get("ssh_host", ""))
+    if sh:
+        tun = SshTunnelBackend(
+            ssh_host=sh, ssh_port=int(cfg.get("ssh_port", 22)),
+            ssh_user=str(cfg.get("ssh_user", "")),
+            ssh_key=str(cfg.get("ssh_key", os.path.expanduser("~/.ssh/id_ed25519"))),
+            agent_port=int(cfg.get("agent_port", 9100)),
         )
-        if be.is_available():
-            return be, f"emulation_agent@{be.agent_host}:{be.agent_port}"
+        if tun.is_available():
+            _log(f"backend: ssh-tunnel ({cfg.get('ssh_user','')}@{sh})")
+            return tun, "ssh_tunnel"
 
+    _log("backend: static-only (no backend reachable)")
     return StaticOnlyBackend(), "static_only"
-
-
-def _looks_like_host(s: str) -> bool:
-    import re
-    return bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$",s)
-        or re.match(r"^[a-zA-Z0-9]([a-zA-Z0-9-]*\.)+[a-zA-Z]{2,}$",s))
