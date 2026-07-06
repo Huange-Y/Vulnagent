@@ -1,0 +1,68 @@
+runtime:
+  run_root: ""
+  execution_backend: "local"
+
+remote:
+  enabled: false
+  host: ""
+  port: 22
+  username: ""
+  key_path: ""
+  password_env: ""
+  work_dir: "/tmp/vulnagent"
+  tool_paths: {}
+
+providers:
+  openai:
+    base_url: "https://api.openai.com/v1"
+    api_key_env: "OPENAI_API_KEY"
+    models:
+      - "gpt-4o"
+      - "gpt-4o-mini"
+  deepseek:
+    base_url: "https://api.deepseek.com/v1"
+    api_key_env: "DEEPSEEK_API_KEY"
+    models:
+      - "deepseek-chat"
+      - "deepseek-reasoner"
+  openrouter:
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: "OPENROUTER_API_KEY"
+    models:
+      - "openai/gpt-4o"
+      - "openai/gpt-4o-mini"
+
+purposes:
+  reasoning:
+    provider: "openai"
+    model: "gpt-4o"
+  routing:
+    provider: "openai"
+    model: "gpt-4o-mini"
+  critique:
+    provider: "openai"
+    model: "gpt-4o-mini"
+  compress:
+    provider: "openai"
+    model: "gpt-4o-mini"
+  default:
+    provider: "openai"
+    model: "gpt-4o"
+
+agent:
+  max_iterations: 5
+  token_limit: 100000
+
+research:
+  mode: "operator-directed"
+  default_scope: ""
+  default_provenance: ""
+
+# ── QEMU emulation backend (optional) ──
+# This is a remote Ubuntu VM running vulnagent.emulation_agent.server:app
+# on port 9100.  Leave enabled=false if you only need static analysis.
+emulation:
+  enabled: false
+  agent_host: "your-vm-ip"
+  agent_port: 9100
+  ssh_key_path: "~/.ssh/id_ed25519"

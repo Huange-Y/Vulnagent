@@ -1,0 +1,191 @@
+# Vulnagent Constraint Configuration
+# Expanded from 14→80+ patterns covering embedded/firmware/IoT false positives
+
+garbage_findings:
+  info_leak:
+    - "version disclosure"
+    - "banner info leak"
+    - "default config path exposed"
+    - "directory listing"
+    - "sourcemap leak"
+    - "firmware version in HTTP header"
+    - "build timestamp exposed"
+    - "compiler strings in binary"
+    - "debug symbols present"
+    - "unlinked source file paths"
+    - "MAC address in config"
+    - "serial number disclosure"
+    - "kernel version string in banner"
+    - "busybox version in binary strings"
+    - "lighttpd/boa/goahead version header"
+  no_impact:
+    - "no PoC memory access"
+    - "unexploitable null pointer"
+    - "local DoS without remote chain"
+    - "OOM crash without controllable input"
+    - "assertion failure in debug build"
+    - "stack trace in debug output"
+    - "NULL deref in unreachable error path"
+    - "use-after-free in single-threaded context"
+    - "integer overflow without memory consequence"
+    - "uninitialized stack read without info leak"
+    - "dead code buffer overflow"
+    - "race condition without security impact"
+    - "TOCTOU on non-security-critical path"
+    - "format string with no writable target"
+    - "off-by-one in padding/buffer end"
+    - "signal handler race without exploit path"
+    - "double free in exit path only"
+  known_safe:
+    - "outdated busybox without exploitable CVE"
+    - "expired SSL cert"
+    - "missing HTTP security header"
+    - "self-signed certificate"
+    - "outdated dropbear without known vulns"
+    - "weak cipher suite in user-space tool"
+    - "HTTP basic auth without transport security"
+    - "TFTP without auth (by design for some devices)"
+    - "SNMP v1/v2c with default community string (CVE required)"
+    - "outdated kernel without remote exploitable CVE"
+    - "UPnP info disclosure per spec"
+    - "mDNS/Avahi service enumeration"
+    - "outdated dnsmasq without exploitable CVE"
+    - "default WPS PIN (hardware-dependent)"
+    - "WPA2-Personal with weak password (user config)"
+  physical:
+    - "physical access required"
+    - "JTAG/SWD exposed without remote chain"
+    - "UART no auth needs physical"
+    - "SPI flash requires physical desoldering"
+    - "debug header exposed on PCB"
+    - "console port requires physical access"
+    - "recovery mode requires hardware button"
+  iot_false_positives:
+    - "busybox applet symlink in /bin"
+    - "/proc/self/environ readable by root"
+    - "default WiFi SSID broadcast"
+    - "WPS button physical access"
+    - "LED control GPIO world-readable"
+    - "/tmp directory world-writable"
+    - "DHCP client logs MAC addresses"
+    - "DNS queries visible on LAN"
+    - "IGMP snooping passive traffic"
+    - "ARP table readable via /proc"
+  binary_analysis_noise:
+    - "system() call found in binary"
+    - "strcpy without buffer size check (but input controlled)"
+    - "gets() usage in dead code"
+    - "sprintf without size format"
+    - "memcpy with compile-time constant size"
+    - "potential buffer overflow in unused function"
+    - "dangerous function name matched (no call path)"
+
+hard_no_report:
+  - "No PoC = does not exist"
+  - "Phenomenon != vuln. Vuln = proven impact"
+  - "Any finding without executable verification script = reject"
+  - "P3 and below = no report"
+  - "20 min no progress = must switch direction"
+  - "Report must have curl or executable command + expected + actual output"
+  - "Reachability != exploitability. Must demonstrate impact"
+  - "Static match = clue, dynamic verification = evidence"
+  - "Emulation crash without controlled input = not exploitable"
+
+decision_tree:
+  # -- OS-level branching --
+  - condition: "OpenWrt / LEDE"
+    direction: "LuCI auth bypass / ubus ACL misconfig / package feed backdoor"
+  - condition: "DD-WRT / Tomato"
+    direction: "Legacy CGI injection / NVRAM manipulation / CSRF in admin panel"
+  - condition: "VxWorks"
+    direction: "WDB debugger RCE / RPC misconfig / WDB agent auth bypass"
+  - condition: "FreeRTOS / ThreadX"
+    direction: "Task stack overflow / ISR race / queue buffer overflow"
+  - condition: "Zephyr / RIOT"
+    direction: "CoAP DTLS bypass / 6LoWPAN fragmentation / BLE GATT overflow"
+  - condition: "Linux (embedded)"
+    direction: "Kernel driver / system call / Netlink / procfs leak"
+  # -- Filesystem / packaging --
+  - condition: "SquashFS + Web CGI"
+    direction: "Command injection / Auth bypass / Unauth access"
+  - condition: "JFFS2 / UBIFS overlay"
+    direction: "Persistent config injection / Flash wear attack"
+  - condition: "init scripts (rcS/inittab)"
+    direction: "Hardcoded credentials / Privilege escalation / Insecure config"
+  - condition: "encrypted config + upload endpoint"
+    direction: "Config import signature bypass / RCE"
+  - condition: "firmware upgrade endpoint"
+    direction: "Unsigned firmware flash / Downgrade attack"
+  # -- Network services --
+  - condition: "GoAhead/lighttpd/Boa web server"
+    direction: "CGI command injection / Auth bypass / Path traversal"
+  - condition: "telnetd/SSH service"
+    direction: "Hardcoded credentials / Default password / Auth bypass"
+  - condition: "ARM/MIPS binary + network service"
+    direction: "Buffer overflow / Format string / Command injection"
+  # -- Protocol-specific --
+  - condition: "UPnP / SSDP service"
+    direction: "SUBSCRIBE header overflow / NOTIFY SSRF / SOAP injection"
+  - condition: "MQTT service"
+    direction: "Topic ACL bypass / retained message injection / will message abuse"
+  - condition: "CoAP / LwM2M service"
+    direction: "Block-wise transfer overflow / URI path traversal / DTLS downgrade"
+  - condition: "TR-069 / CWMP"
+    direction: "ACS spoofing / CPE provisioning abuse / SOAP injection"
+  - condition: "Modbus / BACnet"
+    direction: "Coil/register overflow / function code abuse / broadcast storm"
+  # -- Wireless --
+  - condition: "Wi-Fi driver (ath9k/mt76/brcmfmac)"
+    direction: "Beacon frame overflow / WPA handshake DoS / KCK key extraction"
+  - condition: "Bluetooth/BLE stack"
+    direction: "GATT table overflow / SMP pairing downgrade / L2CAP fragmentation"
+  - condition: "Zigbee/Z-Wave"
+    direction: "NWK frame injection / APS encryption bypass / key transport overflow"
+  # -- Hardware-adjacent --
+  - condition: "GPIO / SPI / I2C interface"
+    direction: "MMIO overflow / DMA abuse / register injection"
+  - condition: "crypto engine (hardware AES/SHA)"
+    direction: "Side-channel timing / weak PRNG seed / key extraction via fault"
+  # -- Fallback --
+  - condition: "nothing found"
+    direction: "Search JS/web files for hidden CGIs / grep for hardcoded keys / diff firmware versions"
+
+dangerous_commands:
+  - pattern: 'rm\s+-rf\s+/'
+    reason: "dangerous deletion"
+  - pattern: 'mkfs\.'
+    reason: "format filesystem"
+  - pattern: 'dd\s+if='
+    reason: "disk write"
+  - pattern: ':\(\)'
+    reason: "fork bomb"
+  - pattern: '>\s*/dev/sd[a-z]'
+    reason: "write to block device"
+  - pattern: 'fdisk'
+    reason: "disk partition"
+  - pattern: 'chmod\s+777\s+/'
+    reason: "world-writable system path"
+  - pattern: 'iptables\s+-F'
+    reason: "flush firewall rules"
+  - pattern: '> /dev/mtd'
+    reason: "write to flash device"
+  - pattern: 'nvram\s+unset'
+    reason: "clear NVRAM config"
+
+cheat_card: |
+  NO POC = NO FINDING
+  PHENOMENON != VULN. VULN = PROVEN IMPACT
+  VERSION / HEADERS / BANNER = SKIP
+  INFO LEAK != VULN (without exploit chain)
+  P3 OR BELOW = NO REPORT
+  20 MIN NO PROGRESS = SWITCH DIRECTION
+  REPORT MUST HAVE CURL OR EXECUTABLE COMMAND
+  REACHABILITY != EXPLOITABILITY
+  STATIC MATCH = CLUE, DYNAMIC VERIFY = EVIDENCE
+  FIRMWARE: VERIFY ON EMULATED DEVICE
+  NO EMULATION CRASH WITHOUT CONTROLLED INPUT
+
+timing:
+  direction_timeout_minutes: 20
+  max_rounds_per_session: 50
+  idle_timeout_minutes: 10

@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>vulnagent 工作台</title>
+  <link rel="stylesheet" href="/static/vulnapp.css">
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand">
+        <h1>vulnagent</h1>
+        <p id="globalSummary">等待载入资产、运行态与漏洞证据。</p>
+      </div>
+      <nav class="view-switch" aria-label="视图切换">
+        <button type="button" data-view="overview" class="active">总览</button>
+        <button type="button" data-view="asset">资产</button>
+        <button type="button" data-view="supervision">监督 / 审计</button>
+        <button type="button" data-view="report">报告 / PoC / 修复</button>
+      </nav>
+    </header>
+
+    <main id="viewRoot">
+      <section class="overview-grid">
+        <article class="panel">
+          <h2>启动分析</h2>
+          <form id="launchForm" class="launch-form">
+            <label for="launchTarget">目标 / 路径 / URL</label>
+            <input id="launchTarget" type="text" placeholder="例如：firmware/DIR816_A1_FW101CNB04.img 或 https://target.example" />
+
+            <label for="launchScope">范围 / 备注</label>
+            <input id="launchScope" type="text" placeholder="例如：authorized firmware triage" />
+
+            <div class="launch-grid">
+              <div>
+                <label for="launchIterations">最大迭代</label>
+                <input id="launchIterations" type="number" min="1" value="5" />
+              </div>
+              <div>
+                <label for="launchBudget">Token 预算</label>
+                <input id="launchBudget" type="number" min="1000" step="1000" value="100000" />
+              </div>
+            </div>
+
+            <div class="intervention-actions">
+              <button id="launchButton" type="submit">启动分析</button>
+              <span id="launchStatus" class="meta">支持本地固件路径、目录或授权目标 URL。</span>
+            </div>
+          </form>
+        </article>
+
+        <article class="panel">
+          <h2>漏洞 / 可疑点</h2>
+          <div id="overviewFindings" class="stack empty-state">等待 finding 数据。</div>
+        </article>
+        <article class="panel">
+          <h2>当前假设</h2>
+          <div id="overviewHypothesis" class="empty-state">等待聚焦一个可疑点。</div>
+        </article>
+        <article class="panel">
+          <h2>下一步</h2>
+          <div id="overviewNextStep" class="empty-state">等待 run 给出下一步验证方向。</div>
+        </article>
+        <article class="panel">
+          <h2>相关证据</h2>
+          <div id="overviewEvidence" class="stack empty-state">等待 evidence 关联到当前可疑点。</div>
+        </article>
+        <article class="panel">
+          <h2>运行态</h2>
+          <div id="overviewRuntime" class="empty-state">等待运行态摘要。</div>
+        </article>
+        <article class="panel">
+          <h2>Agent 时间线</h2>
+          <div id="overviewTimeline" class="stack empty-state">等待 agent 事件流。</div>
+        </article>
+      </section>
+
+      <section class="asset-shell hidden" id="assetShell">
+        <aside class="panel sidebar-stack">
+          <section class="section-block">
+            <h2>资产</h2>
+            <div id="assetList" class="stack"></div>
+          </section>
+          <section class="section-block">
+            <h2>运行记录</h2>
+            <div id="runList" class="stack empty-state">等待选中资产。</div>
+          </section>
+        </aside>
+
+        <section class="panel">
+          <h2>漏洞 / 可疑点</h2>
+          <div id="findingList" class="stack empty-state">等待 run 载入 findings。</div>
+        </section>
+
+        <section class="panel">
+          <h2>漏洞详情</h2>
+          <div id="findingHeader" class="detail-header empty-state">选中一个 finding 后，这里会展示它为什么可疑、如何利用、现在卡在哪里。</div>
+
+          <section class="detail-group">
+            <h3>可疑点说明</h3>
+            <div id="findingWhy" class="detail-copy empty-state">等待 finding 详情。</div>
+          </section>
+
+          <section class="detail-group">
+            <h3>当前假设</h3>
+            <div id="findingHypothesis" class="detail-copy empty-state">等待当前假设。</div>
+          </section>
+
+          <section class="detail-group">
+            <h3>下一步</h3>
+            <div id="findingNextStep" class="detail-copy empty-state">等待下一步验证动作。</div>
+          </section>
+
+          <section class="detail-group">
+            <h3>相关证据</h3>
+            <div id="findingEvidence" class="stack empty-state">等待 evidence。</div>
+          </section>
+
+          <section class="detail-group">
+            <h3>关联时间线</h3>
+            <div id="findingTimeline" class="stack empty-state">等待和当前可疑点相关的事件流。</div>
+          </section>
+        </section>
+
+        <section class="panel artifact-panel">
+          <section class="detail-group artifact-pane">
+            <h3>???</h3>
+            <div id="fileTree" class="stack empty-state">???? run ??????????</div>
+          </section>
+
+          <section class="detail-group artifact-pane">
+            <h3>????</h3>
+            <div id="artifactPreview" class="empty-state">??????????????????????????????</div>
+          </section>
+
+          <section class="detail-group artifact-pane">
+            <h3>?????</h3>
+            <div id="artifactTimeline" class="stack empty-state">????? finding ????????????</div>
+          </section>
+        </section>
+      </section>
+
+      <section class="supervision-shell hidden" id="supervisionShell">
+        <aside class="panel">
+          <h2>并行 Agent</h2>
+          <div id="agentList" class="stack empty-state">等待 agent 运行态。</div>
+        </aside>
+
+        <section class="supervision-main">
+          <article class="panel">
+            <h2>运行态 / 介入</h2>
+            <div id="agentDetail" class="empty-state">选择左侧 Agent 查看它当前目标、思路、阻塞点与下一步。</div>
+
+            <form id="interventionForm" class="intervention-form">
+              <label for="interventionInput">介入指令</label>
+              <textarea
+                id="interventionInput"
+                rows="4"
+                placeholder="例如：优先验证 telnetd 是否在仿真环境中可达，再继续做广度扫描。"
+              ></textarea>
+              <div class="intervention-actions">
+                <button id="interventionButton" type="submit">发送介入</button>
+                <span id="interventionStatus" class="meta">默认发给当前选中的 Agent；未选中时发给整个 run。</span>
+              </div>
+            </form>
+
+            <section class="detail-group">
+              <h3>介入记录</h3>
+              <div id="interventionList" class="stack empty-state">等待第一条介入记录。</div>
+            </section>
+          </article>
+
+          <article class="panel">
+            <h2>Agent 时间线</h2>
+            <div id="agentTimeline" class="stack empty-state">等待 agent 事件流。</div>
+          </article>
+        </section>
+      </section>
+
+      <section class="report-shell hidden" id="reportShell">
+        <article class="panel" style="grid-column: 1 / -1;">
+          <div id="reportContent" class="empty-state">等待分析完成后自动生成报告。完成后包含 CVSS 评分、PoC 脚本、修复建议。</div>
+        </article>
+      </section>
+    </main>
+  </div>
+
+  <script type="module" src="/static/vulnapp.js"></script>
+</body>
+</html>
